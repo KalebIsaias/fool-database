@@ -1,76 +1,108 @@
 use std::io::{self, Write};
-
-#[derive(Debug)]
-struct User {
-    id: u32,
-    name: String,
-    age: u8,
-    city: String,
-}
-
-struct Database {
-    users: Vec<User>,
-}
-
-impl Database {
-    fn new() -> Self {
-        Database { users: Vec::new() }
-    }
-
-    fn insert(&mut self, name: String, age: u8, city: String) {
-        let id = self.users.len() as u32 + 1;
-        let user = User { id, name, age, city };
-        self.users.push(user);
-        println!("User inserted with ID: {}", id);
-    }
-
-    fn select_all(&self) {
-        println!("All users in the database:");
-        for user in &self.users {
-            println!("{:?}", user);
-        }
-        println!("----------------------------");
-    }
-}
-
+use std::collections::HashMap;
+use fool_database::db::{Column, ColumnType, DataType, Database, Row};
+use fool_database::sql::{Command, execute, QueryResult, WhereClause};
 fn main() {
-    let mut db = Database::new();
+  let mut db = Database::new();
 
-    db.insert("Peter Parker".to_string(), 25, "New York".to_string());
-    db.insert("Clark Kent".to_string(), 35, "Metropolis".to_string());
+  loop {
+    println!("> ");
+    io::stdout().flush().unwrap();
 
-    println!("Welcome to fool db.");
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).expect("Failed to read line");
+    let input = input.trim();
+    if input == "exit" { break };        
 
-    loop {
-        println!(">");
-        io::stdout().flush().unwrap();
+    let parts: Vec<&str> = input.split_whitespace().collect();
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).expect("Failed to read line");
+    let command = match parts.as_slice() {
+      ["create", "table", table_name, cols_desc @ ..] => {
+        let mut columns = Vec::new();
+        for desc in cols_desc {
+          let pair: Vec<&str> = desc.split(':').collect();
+          if pair.len() == 2 {
+            let name = pair[0].to_string();
+            let type_str = pair[1];
 
-        let input = input.trim();
-
-        if input == "exit" {
-            break;
+            let col_type = match type_str {
+              "int" => ColumnType::Integer,
+              "text" => ColumnType::Text,
+              _ => {
+                println!("Unknown column type: {}", type_str);
+                continue;
+              }
+            };
+            columns.push(Column { name, col_type });
+          }
         }
+        Some(Command::CreateTable {
+          table_name: table_name.to_string(),
+          columns,
+        })
+      },
+      ["insert", table_name, kvs @ ..] => {
+        let mut row: Row = HashMap::new();
+        for kv in kvs {
+          let pair: Vec<&str> = kv.split('=').collect();
+          if pair.len() == 2 {
+            let col_name = pair[0].to_string();
+            let value_str = pair[1];
 
-        let parts: Vec<&str> = input.split_whitespace().collect();
-
-        match parts.as_slice() {
-            ["select"] => {
-                db.select_all();
-            },
-            ["insert", name, age, city] => {
-                if let Ok(age) = age.parse::<u8>() {
-                    db.insert(name.to_string(), age, city.to_string());
-                } else {
-                    println!("Invalid age: {}", age);
-                }
-            },
-            _ => {
-                println!("Unrecognized command: {}", input);
-            }
+            let value = if let Ok(int_val) = value_str.parse::<i32>() {
+              DataType::Integer(int_val)
+            } else {
+              DataType::Text(value_str.to_string())
+            };
+            row.insert(col_name, value);
+          }
         }
+        Some(Command::Insert {
+          table_name: table_name.to_string(),
+          row,
+        })
+      },
+      ["select", table_name, "where", condition] => {
+        let cond_parts: Vec<&str> = condition.split('=').collect();
+        if cond_parts.len() == 2 {
+          let col_name = cond_parts[0];
+          let value = cond_parts[1];
+
+          Some(Command::Select {
+            table_name: table_name.to_string(),
+            fields: vec![],
+            where_clause: Some(WhereClause {
+              column: col_name.to_string(),
+              value: value.to_string(),
+            }),
+          })
+        } else {
+          println!("Invalid syntax. Use: select <table> where <col>=<val>");
+          None
+        }
+      },
+      ["select", table_name] => {
+        Some(Command::Select {
+          table_name: table_name.to_string(),
+          fields: vec![],
+          where_clause: None,
+        })
+      },
+      _ => {
+        println!("Unknown command");
+        None
+      }
+    };
+    if let Some(cmd) = command {
+      match execute(&mut db, cmd) {
+        QueryResult::Message(msg) => println!("{}", msg),
+        QueryResult::Error(err) => println!("Error: {}", err),
+        QueryResult::Rows(rows) => {
+          for row in rows {
+            println!("{:?}", row);
+          }
+        }
+      }
     }
+  }
 }
-
